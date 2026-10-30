@@ -842,10 +842,12 @@ bool Recompiler::Recompile(
         break;
 
     case PPC_INST_DCBZ:
+        // The Xbox 360 has no short cache line: dcbz clears the whole 128-byte line, like
+        // dcbz128 (Xenia does the same). Code clearing memory in 128-byte steps relies on it.
         print("\tmemset(base + ((");
         if (insn.operands[0] != 0)
             print("{}.u32 + ", r(insn.operands[0]));
-        println("{}.u32) & ~31), 0, 32);", r(insn.operands[1]));
+        println("{}.u32) & ~127), 0, 128);", r(insn.operands[1]));
         break;
 
     case PPC_INST_DCBZL:
