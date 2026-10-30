@@ -868,19 +868,21 @@ bool Recompiler::Recompile(
         break;
 
     case PPC_INST_DIVW:
-        println("\t{}.s32 = ppc_divw({}.s32, {}.s32);", r(insn.operands[0]), r(insn.operands[1]), r(insn.operands[2]));
+        // Zero-extended like Xenia: the upper half must not keep stale bits.
+        println("\t{}.u64 = uint32_t(ppc_divw({}.s32, {}.s32));", r(insn.operands[0]), r(insn.operands[1]), r(insn.operands[2]));
         if (strchr(insn.opcode->name, '.'))
             println("\t{}.compare<int32_t>({}.s32, 0, {});", cr(0), r(insn.operands[0]), xer());
         break;
 
     case PPC_INST_DIVWU:
-        println("\t{}.u32 = ppc_divwu({}.u32, {}.u32);", r(insn.operands[0]), r(insn.operands[1]), r(insn.operands[2]));
+        println("\t{}.u64 = ppc_divwu({}.u32, {}.u32);", r(insn.operands[0]), r(insn.operands[1]), r(insn.operands[2]));
         if (strchr(insn.opcode->name, '.'))
             println("\t{}.compare<int32_t>({}.s32, 0, {});", cr(0), r(insn.operands[0]), xer());
         break;
 
     case PPC_INST_EIEIO:
-        // no op
+        // Orders I/O stores; on x86 that only needs the compiler not to move memory accesses.
+        println("\tstd::atomic_signal_fence(std::memory_order_seq_cst);");
         break;
 
     case PPC_INST_EXTSB:
@@ -1248,7 +1250,9 @@ bool Recompiler::Recompile(
         break;
 
     case PPC_INST_LWSYNC:
-        // no op
+        // A full fence (as Xenia): non-volatile stores (vector stores, dcbz memsets) must not be
+        // moved past the store that publishes them.
+        println("\tstd::atomic_thread_fence(std::memory_order_seq_cst);");
         break;
 
     case PPC_INST_LWZ:
@@ -1487,7 +1491,8 @@ bool Recompiler::Recompile(
     case PPC_INST_SRAW:
         println("\t{}.u32 = {}.u32 & 0x3F;", temp(), r(insn.operands[2]));
         println("\tif ({}.u32 > 0x1F) {}.u32 = 0x1F;", temp(), temp());
-        println("\t{}.ca = ({}.s32 < 0) & ((({}.s32 >> {}.u32) << {}.u32) != {}.s32);", xer(), r(insn.operands[1]), r(insn.operands[1]), temp(), temp(), r(insn.operands[1]));
+        // CA: negative and any 1 bits shifted out; a shift of 32+ shifts out everything.
+        println("\t{}.ca = ({}.s32 < 0) & ((({}.u32 & 0x3F) > 0x1F) | ((({}.s32 >> {}.u32) << {}.u32) != {}.s32));", xer(), r(insn.operands[1]), r(insn.operands[2]), r(insn.operands[1]), temp(), temp(), r(insn.operands[1]));
         println("\t{}.s64 = {}.s32 >> {}.u32;", r(insn.operands[0]), r(insn.operands[1]), temp());
         if (strchr(insn.opcode->name, '.'))
             println("\t{}.compare<int32_t>({}.s32, 0, {});", cr(0), r(insn.operands[0]), xer());
@@ -1756,7 +1761,7 @@ bool Recompiler::Recompile(
         break;
 
     case PPC_INST_SYNC:
-        // no op
+        println("\tstd::atomic_thread_fence(std::memory_order_seq_cst);");
         break;
 
     case PPC_INST_TDLGEI:
