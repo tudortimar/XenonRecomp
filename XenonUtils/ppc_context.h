@@ -682,6 +682,53 @@ inline simde__m128i simde_mm_vctsxs(simde__m128 src1)
     return simde_mm_andnot_si128(simde_mm_castps_si128(xmm2), simde_mm_castps_si128(dest));
 }
 
+// Xbox 360 half floats (vpkd3d128/vupkd3d128): IEEE layout, but exponent 31 is an ordinary
+// exponent (no infinities or NaNs), so the largest value is 131008.
+// PowerPC integer division does not trap on a zero divisor or on INT_MIN / -1 (the result
+// is undefined); x86 raises an exception for both, so guard them.
+inline int32_t ppc_divw(int32_t a, int32_t b) { return b == 0 ? 0 : (b == -1 ? int32_t(0u - uint32_t(a)) : a / b); }
+inline uint32_t ppc_divwu(uint32_t a, uint32_t b) { return b == 0 ? 0 : a / b; }
+inline int64_t ppc_divd(int64_t a, int64_t b) { return b == 0 ? 0 : (b == -1 ? int64_t(0ull - uint64_t(a)) : a / b); }
+inline uint64_t ppc_divdu(uint64_t a, uint64_t b) { return b == 0 ? 0 : a / b; }
+
+inline float ppc_half_to_float(uint16_t h)
+{
+    uint32_t sign = uint32_t(h & 0x8000) << 16;
+    uint32_t exp = (h >> 10) & 0x1F;
+    uint32_t mant = h & 0x3FF;
+    float value = exp == 0 ? float(mant) * (1.0f / 16777216.0f)
+                           : ldexpf(1.0f + float(mant) / 1024.0f, int(exp) - 15);
+    uint32_t bits;
+    memcpy(&bits, &value, 4);
+    bits |= sign;
+    memcpy(&value, &bits, 4);
+    return value;
+}
+
+inline uint16_t ppc_float_to_half(float f)
+{
+    uint32_t bits;
+    memcpy(&bits, &f, 4);
+    uint16_t sign = uint16_t((bits >> 16) & 0x8000);
+    float a = fabsf(f);
+    if (a != a || a >= 131008.0f)
+        return sign | 0x7FFF;
+    if (a < 6.103515625e-05f) // subnormal range
+        return sign | uint16_t(a * 16777216.0f + 0.5f);
+    int e;
+    float m = frexpf(a, &e); // a = m * 2^e, m in [0.5, 1)
+    uint32_t mant = uint32_t((m * 2.0f - 1.0f) * 1024.0f + 0.5f);
+    int exp = e - 1 + 15;
+    if (mant == 1024)
+    {
+        mant = 0;
+        exp++;
+    }
+    if (exp > 31)
+        return sign | 0x7FFF;
+    return sign | uint16_t(exp << 10) | uint16_t(mant);
+}
+
 inline simde__m128i simde_mm_vctuxs(simde__m128 src1)
 {
     // max_ps returns the second operand for NaN, so NaN and negatives clamp to 0.

@@ -712,7 +712,12 @@ bool Recompiler::Recompile(
         break;
 
     case PPC_INST_BLRL:
-        println("__builtin_debugtrap();");
+        // Branch to LR and link: an indirect call through the old LR.
+        println("\t{}.u32 = uint32_t(ctx.lr);", temp());
+        if (!config.skipLr)
+            println("\tctx.lr = 0x{:X};", base + 4);
+        println("\tPPC_CALL_INDIRECT_FUNC({}.u32);", temp());
+        csrState = CSRState::Unknown;
         break;
 
     case PPC_INST_BLT:
@@ -850,23 +855,23 @@ bool Recompiler::Recompile(
         break;
 
     case PPC_INST_DIVD:
-        println("\t{}.s64 = {}.s64 / {}.s64;", r(insn.operands[0]), r(insn.operands[1]), r(insn.operands[2]));
+        println("\t{}.s64 = ppc_divd({}.s64, {}.s64);", r(insn.operands[0]), r(insn.operands[1]), r(insn.operands[2]));
         break;
 
     case PPC_INST_DIVDU:
-        println("\t{}.u64 = {}.u64 / {}.u64;", r(insn.operands[0]), r(insn.operands[1]), r(insn.operands[2]));
+        println("\t{}.u64 = ppc_divdu({}.u64, {}.u64);", r(insn.operands[0]), r(insn.operands[1]), r(insn.operands[2]));
         if (strchr(insn.opcode->name, '.'))
             println("\t{}.compare<int32_t>({}.s32, 0, {});", cr(0), r(insn.operands[0]), xer());
         break;
 
     case PPC_INST_DIVW:
-        println("\t{}.s32 = {}.s32 / {}.s32;", r(insn.operands[0]), r(insn.operands[1]), r(insn.operands[2]));
+        println("\t{}.s32 = ppc_divw({}.s32, {}.s32);", r(insn.operands[0]), r(insn.operands[1]), r(insn.operands[2]));
         if (strchr(insn.opcode->name, '.'))
             println("\t{}.compare<int32_t>({}.s32, 0, {});", cr(0), r(insn.operands[0]), xer());
         break;
 
     case PPC_INST_DIVWU:
-        println("\t{}.u32 = {}.u32 / {}.u32;", r(insn.operands[0]), r(insn.operands[1]), r(insn.operands[2]));
+        println("\t{}.u32 = ppc_divwu({}.u32, {}.u32);", r(insn.operands[0]), r(insn.operands[1]), r(insn.operands[2]));
         if (strchr(insn.opcode->name, '.'))
             println("\t{}.compare<int32_t>({}.s32, 0, {});", cr(0), r(insn.operands[0]), xer());
         break;
@@ -2101,8 +2106,16 @@ bool Recompiler::Recompile(
             println("\t{}.u32[{}] = {}.u32;", v(insn.operands[0]), insn.operands[4], temp());
             break;
 
+        case 3: // float16_2 (x, y -> one word); operands[3] = pack mode, operands[4] = slot
+            if (insn.operands[3] != 1)
+                fmt::println("Unexpected float16_2 pack instruction at {:X}", base);
+            println("\t{}.u32[{}] = (uint32_t(ppc_float_to_half({}.f32[3])) << 16) | ppc_float_to_half({}.f32[2]);",
+                v(insn.operands[0]), insn.operands[4], v(insn.operands[1]), v(insn.operands[1]));
+            break;
+
         case 5: // float16_4
-            if (insn.operands[3] != 2 || insn.operands[4] > 2)
+            // Pack modes 2 and 3 place the 64-bit result identically for slots 0-2.
+            if ((insn.operands[3] != 2 && insn.operands[3] != 3) || insn.operands[4] > 2)
                 fmt::println("Unexpected float16_4 pack instruction at {:X}", base);
 
             for (size_t i = 0; i < 4; i++)
@@ -2359,6 +2372,20 @@ bool Recompiler::Recompile(
             }
             println("\t{}.f32[1] = 0.0f;", vTemp());
             println("\t{}.f32[0] = 1.0f;", vTemp());
+            println("\t{} = {};", v(insn.operands[0]), vTemp());
+            break;
+
+        case 3: // float16_2: guest (x, y) from the low word, z = 0, w = 1
+            println("\t{}.f32[3] = ppc_half_to_float({}.u16[1]);", vTemp(), v(insn.operands[1]));
+            println("\t{}.f32[2] = ppc_half_to_float({}.u16[0]);", vTemp(), v(insn.operands[1]));
+            println("\t{}.f32[1] = 0.0f;", vTemp());
+            println("\t{}.f32[0] = 1.0f;", vTemp());
+            println("\t{} = {};", v(insn.operands[0]), vTemp());
+            break;
+
+        case 5: // float16_4: four halves from the low 64 bits (reversed storage maps lane i to lane i)
+            for (size_t i = 0; i < 4; i++)
+                println("\t{}.f32[{}] = ppc_half_to_float({}.u16[{}]);", vTemp(), i, v(insn.operands[1]), i);
             println("\t{} = {};", v(insn.operands[0]), vTemp());
             break;
 
