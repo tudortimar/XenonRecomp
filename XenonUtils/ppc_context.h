@@ -682,6 +682,18 @@ inline simde__m128i simde_mm_vctsxs(simde__m128 src1)
     return simde_mm_andnot_si128(simde_mm_castps_si128(xmm2), simde_mm_castps_si128(dest));
 }
 
+inline simde__m128i simde_mm_vctuxs(simde__m128 src1)
+{
+    // max_ps returns the second operand for NaN, so NaN and negatives clamp to 0.
+    simde__m128 x = simde_mm_max_ps(src1, simde_mm_setzero_ps());
+    simde__m128 big = simde_mm_cmpge_ps(x, simde_mm_set1_ps(2147483648.0f));
+    simde__m128i lo = simde_mm_cvttps_epi32(x);
+    simde__m128i hi = simde_mm_add_epi32(simde_mm_cvttps_epi32(simde_mm_sub_ps(x, simde_mm_set1_ps(2147483648.0f))), simde_mm_set1_epi32(INT_MIN));
+    simde__m128i dest = simde_mm_castps_si128(simde_mm_blendv_ps(simde_mm_castsi128_ps(lo), simde_mm_castsi128_ps(hi), big));
+    simde__m128 sat = simde_mm_cmpge_ps(x, simde_mm_set1_ps(4294967296.0f));
+    return simde_mm_or_si128(dest, simde_mm_castps_si128(sat));
+}
+
 inline simde__m128i simde_mm_vsr(simde__m128i a, simde__m128i b)
 {
     b = simde_mm_srli_epi64(simde_mm_slli_epi64(b, 61), 61);
