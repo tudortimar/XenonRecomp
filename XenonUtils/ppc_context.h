@@ -5,6 +5,7 @@
 #error "ppc_config.h must be included before ppc_context.h"
 #endif
 
+#include <atomic>
 #include <climits>
 #include <cmath>
 #include <csetjmp>
@@ -690,6 +691,43 @@ inline int32_t ppc_divw(int32_t a, int32_t b) { return b == 0 ? 0 : (b == -1 ? i
 inline uint32_t ppc_divwu(uint32_t a, uint32_t b) { return b == 0 ? 0 : a / b; }
 inline int64_t ppc_divd(int64_t a, int64_t b) { return b == 0 ? 0 : (b == -1 ? int64_t(0ull - uint64_t(a)) : a / b); }
 inline uint64_t ppc_divdu(uint64_t a, uint64_t b) { return b == 0 ? 0 : a / b; }
+
+// Load-reserve / store-conditional. A plain compare-and-swap succeeds when the value went A->B->A
+// in between (ABA), which breaks lock-free lists written for PowerPC, where any intervening store
+// to the line cancels the reservation. Each 128-byte reservation granule (hashed) has a version
+// that every successful store-conditional bumps; a store-conditional fails if the version moved
+// since its load-reserve. (Plain stores don't bump it -- lock-free code updates the line through
+// store-conditionals, which is what matters for ABA.)
+inline std::atomic<uint32_t> g_ppcReservations[65536];
+inline thread_local uint32_t g_ppcReservedVersion;
+inline thread_local uint32_t g_ppcReservedLine = ~0u;
+
+inline std::atomic<uint32_t>& ppc_reservation(uint32_t ea) { return g_ppcReservations[(ea >> 7) & 0xFFFF]; }
+
+inline void ppc_reserve(uint32_t ea)
+{
+    std::atomic<uint32_t>& line = ppc_reservation(ea);
+    uint32_t v;
+    while ((v = line.load(std::memory_order_acquire)) & 1)
+        ; // a store-conditional on this line is in progress
+    g_ppcReservedVersion = v;
+    g_ppcReservedLine = ea >> 7;
+}
+
+template <typename T>
+inline bool ppc_store_conditional(uint8_t* base, uint32_t ea, T expected, T value)
+{
+    if (g_ppcReservedLine != (ea >> 7))
+        return false;
+    g_ppcReservedLine = ~0u;
+    std::atomic<uint32_t>& line = ppc_reservation(ea);
+    uint32_t v = g_ppcReservedVersion;
+    if (!line.compare_exchange_strong(v, v + 1, std::memory_order_acquire))
+        return false; // another store-conditional hit the line since the load-reserve
+    bool ok = __sync_bool_compare_and_swap(reinterpret_cast<T*>(base + ea), expected, value);
+    line.store(g_ppcReservedVersion + 2, std::memory_order_release);
+    return ok;
+}
 
 inline float ppc_half_to_float(uint16_t h)
 {
